@@ -1,0 +1,16 @@
+{
+  "name": "CurrencyFlow • Live Rates",
+  "short_name": "CurrencyFlow",
+  "description": "Fast, accurate currency converter with real-time exchange rates.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#74ebd5",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2534/2534204.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

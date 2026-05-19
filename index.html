@@ -1,65 +1,171 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Currency Converter</title>
-	<link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Fast, accurate & beautiful currency converter with real-time live exchange rates.">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#74ebd5">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#020617">
+    
+    <!-- Open Graph & Social Meta Tags for traction/sharing -->
+    <meta property="og:title" content="CurrencyFlow • Live Rates">
+    <meta property="og:description" content="Fast, accurate currency converter with real-time exchange rates.">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="CurrencyFlow • Live Rates">
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2534/2534204.png">
+    <title>Currency Converter • Live Rates</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/2534/2534204.png" type="image/png">
 </head>
 <body>
-	<!-- Top navbar -->
-	<nav class="topnav">
-		<div class="topnav-inner">
-			<button id="tab-converter" class="tab-btn active" aria-controls="converter-section">Converter</button>
-			<button id="tab-live" class="tab-btn" aria-controls="live-section">Live Exchange</button>
-		</div>
-	</nav>
+    <noscript>
+        <div style="background: #c0392b; color: white; padding: 1rem; text-align: center; position: relative; z-index: 2000;">
+            This app requires JavaScript to function. Please enable JavaScript in your browser settings.
+        </div>
+    </noscript>
 
-	<!-- Converter -->
-	<div id="converter-section" class="currency">
-		<h2>Currency Converter</h2>
-		<p class="tagline">Convert between world currencies with live exchange rates.</p>
-		<form id="currency-conversion" aria-label="Currency conversion form">
-			<label for="amount">Amount</label>
-			<input type="number" id="amount" inputmode="decimal" placeholder="e.g. 100" required>
-			<small id="amount-hint" class="hint" aria-live="polite"></small>
-			<label for="from">From</label>
-			<select id="from" required>
-				<option value="USD">USD</option>
-				<option value="INR">INR</option>
-			</select>
-			<button type="button" id="swap" aria-label="Swap currencies">↔</button>
-			<label for="to">To</label>
-			<select id="to" required>
-				<option value="USD">USD</option>
-				<option value="INR">INR</option>
-			</select>
-			<button type="submit" aria-label="Convert currency">Convert</button>
-		</form>
-		<p id="status" class="status" aria-live="polite"></p>
-		<p class="result-label">Converted Amount</p>
-		<p class="result-chip"><strong id="result"></strong></p>
-	</div>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <!-- <span class="logo-icon"></span> -->
+                <h1>CurrencyFlow</h1>
+            </div>
+            <p class="header-subtitle">Real-time • Accurate • Simple</p>
+        </div>
+    </header>
 
-	<!-- Live Exchange -->
-	<div id="live-section" class="live hidden" aria-live="polite">
-		<h2>Live Exchange Rates</h2>
-		<p class="tagline">Auto-refreshing rates for popular currencies.</p>
-		<div class="live-controls">
-			<label for="live-base">Base</label>
-			<select id="live-base"></select>
-			<span class="live-updated" id="live-updated"></span>
-		</div>
-		<div class="table-wrap">
-			<table class="rates-table" id="rates-table" aria-label="Live exchange rates table">
-				<thead>
-					<tr><th>Currency</th><th>Rate</th></tr>
-				</thead>
-				<tbody></tbody>
-			</table>
-		</div>
-		<p id="live-status" class="status" aria-live="polite"></p>
-	</div>
+    <!-- Navigation -->
+    <nav class="topnav" aria-label="Main tabs" role="tablist">
+        <div class="topnav-inner">
+            <button type="button" id="tab-converter" class="tab-btn active" role="tab" aria-controls="converter-section" aria-selected="true">
+                Converter
+            </button>
+            <button type="button" id="tab-live" class="tab-btn" role="tab" aria-controls="live-section" aria-selected="false">
+                Live Rates
+            </button>
+        </div>
+    </nav>
+
+    <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle Dark Mode" title="Toggle Dark Mode">
+        <svg id="icon-sun" class="hidden" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+    </button>
+
+    <main class="main-content">
+        <!-- Converter Section -->
+        <section id="converter-section" class="currency">
+            <h2>Currency Converter</h2>
+            <p class="tagline">Instant conversion with live exchange rates</p>
+
+            <form id="currency-conversion" aria-label="Currency conversion form" novalidate>
+                <div class="form-group">
+                    <label for="amount">Amount</label>
+                    <input type="number" id="amount" inputmode="decimal" placeholder="100.00" step="0.01" title="Press 'A' to focus" required>
+                    <div class="quick-amounts">
+                        <button type="button" class="quick-btn" data-val="10">+10</button>
+                        <button type="button" class="quick-btn" data-val="100">+100</button>
+                        <button type="button" class="quick-btn" data-val="1000">+1k</button>
+                    </div>
+                    <small id="amount-hint" class="hint" aria-live="polite"></small>
+                </div>
+
+                <div class="currency-row">
+                    <div class="select-group">
+                        <label for="from">From</label>
+                        <select id="from" required></select>
+                    </div>
+
+                    <button type="button" id="swap" class="swap-btn" aria-label="Swap currencies" title="Swap currencies (Press 'S')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="15 14 20 9 15 4"></polyline><line x1="4" y1="9" x2="20" y2="9"></line><polyline points="9 10 4 15 9 20"></polyline><line x1="20" y1="15" x2="4" y2="15"></line>
+                        </svg>
+                    </button>
+
+                    <div class="select-group">
+                        <label for="to">To</label>
+                        <select id="to" required></select>
+                    </div>
+                </div>
+
+                <button type="submit" class="convert-btn" id="convert-btn">
+                    <span>Convert Now</span>
+                </button>
+            </form>
+
+            <div class="result-area">
+                <p id="status" class="status" aria-live="polite"></p>
+                
+                <div class="result-box">
+                    <p class="result-label">You will get</p>
+                    <div class="result-chip-wrapper">
+                        <p class="result-chip" id="result-container">
+                            <strong id="result">—</strong>
+                        </p>
+                        <button type="button" id="copy-btn" class="copy-btn" aria-label="Copy result" title="Copy result">
+                            <svg id="icon-copy" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                            <svg id="icon-check" class="hidden" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-up)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </button>
+                    </div>
+                    <p id="inverse-rate" class="inverse-rate"></p>
+                    
+                    <div class="freshness-indicator">
+                        <span class="pulse-dot"></span>
+                        <span class="freshness-text">Using live market rates</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Live Rates Section -->
+        <section id="live-section" class="live hidden">
+            <h2>Live Exchange Rates</h2>
+            <p class="tagline">Auto-updates every 10 seconds</p>
+
+            <div class="live-controls">
+                <label for="live-base">Base Currency</label>
+                <select id="live-base"></select>
+                <span class="live-updated" id="live-updated">Last updated: —</span>
+            </div>
+
+            <div class="search-group">
+                <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="search" id="live-search" placeholder="Search currencies (e.g., EUR, JPY)..." aria-label="Search live rates" title="Press '/' to search">
+            </div>
+
+            <div class="table-wrap">
+                <table class="rates-table" id="rates-table" aria-label="Live exchange rates table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Currency</th>
+                            <th scope="col">Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <p id="live-status" class="status" aria-live="polite"></p>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>
+            Built with dedication • Powered by <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">ExchangeRate-API</a>
+        </p>
+        <p class="footer-links">
+            <a href="#" id="github-link">GitHub</a> • 
+            <a href="#" id="report-bug">Report Bug</a>
+        </p>
+    </footer>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden" aria-live="polite"></div>
+
     <script src="script.js"></script>
 </body>
 </html>
