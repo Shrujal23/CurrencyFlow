@@ -1,39 +1,60 @@
-const CACHE_NAME = 'currencyflow-app-v1';
-const API_CACHE = 'currencyflow-api-v1';
+const CACHE_NAME = 'currencyflow-v7';
+const API_CACHE = 'currencyflow-api-v7';
 
 const ASSETS = [
-    './',
-    './index.html',
-    './style.css',
-    './script.js',
-    './manifest.json'
+  './',
+  './index.html',
+  './style.css',
+  './custom-select.js',
+  './script.js',
+  './config.js',
+  './manifest.json',
+  './icons/favicon.ico',
+  './icons/favicon.svg',
+  './icons/favicon-16.png',
+  './icons/favicon-32.png',
+  './icons/apple-touch-icon.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
 ];
 
-// Install and cache core assets
 self.addEventListener('install', (e) => {
-    e.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(ASSETS)));
+  self.skipWaiting();
 });
 
-// Smart Fetch Strategy
-self.addEventListener('fetch', (e) => {
-    const url = new URL(e.request.url);
-    
-    // Network-first for API calls, fallback to cache if offline
-    if (url.origin === 'https://api.exchangerate-api.com') {
-        e.respondWith(
-            fetch(e.request)
-                .then((res) => {
-                    const clonedRes = res.clone();
-                    caches.open(API_CACHE).then((cache) => cache.put(e.request, clonedRes));
-                    return res;
-                })
-                .catch(() => caches.match(e.request))
-        );
-        return;
-    }
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches
+      .keys()
+      .then((names) =>
+        Promise.all(
+          names.filter((n) => n !== CACHE_NAME && n !== API_CACHE).map((n) => caches.delete(n))
+        )
+      )
+      .then(() => self.clients.claim())
+  );
+});
 
-    // Cache-first for static assets
+self.addEventListener('fetch', (e) => {
+  const { hostname } = new URL(e.request.url);
+
+  if (
+    hostname === 'api.exchangerate.fun' ||
+    hostname === 'v6.exchangerate-api.com' ||
+    hostname === 'open.er-api.com'
+  ) {
     e.respondWith(
-        caches.match(e.request).then((res) => res || fetch(e.request))
+      fetch(e.request)
+        .then((res) => {
+          const clone = res.clone();
+          caches.open(API_CACHE).then((c) => c.put(e.request, clone));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
     );
+    return;
+  }
+
+  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
 });

@@ -1,16 +1,29 @@
 {
-  "name": "CurrencyFlow • Live Rates",
+  "name": "CurrencyFlow",
   "short_name": "CurrencyFlow",
-  "description": "Fast, accurate currency converter with real-time exchange rates.",
+  "description": "Fast currency converter with live rates, offline support, and dark mode.",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#74ebd5",
+  "background_color": "#f6f3ed",
+  "theme_color": "#1a6b63",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/2534/2534204.png",
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

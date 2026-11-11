@@ -1,0 +1,37 @@
+# --- Dependencies (only if you run npm e.g. to regenerate icons) ---
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# --- Secrets & local config ---
+# Keep API keys out of Git: copy config.example.js → config.local.js and paste your key there.
+# (Leave committed config.js empty for the open API fallback.)
+config.local.js
+.env
+.env.*
+!.env.example
+
+# --- Personal notes (not part of the shipped app) ---
+Notes.txt
+
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.suo
+*.user
+*~
+*.swp
+*.swo
+
+# --- Logs ---
+*.log

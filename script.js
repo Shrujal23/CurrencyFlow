@@ -1,482 +1,620 @@
-// Cross-session cache for currency rates to make conversions instant on reload
-let ratesCache = JSON.parse(localStorage.getItem('ratesCache')) || {};
-const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_MS = 5 * 60 * 1000;
+const CACHE_KEY = 'ratesCache_v3';
+const LIVE_TAB_TICK_MS = 4 * 1000;
+const LIVE_AUTO_FETCH_MS = 30 * 1000;
+const PREV_RATES_KEY = 'prevRatesByBase';
+const RATE_EPS = 1e-5;
+const POPULAR = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SGD'];
+const FLAG_MAP = {
+  EUR: 'EU', USD: 'US', JPY: 'JP', GBP: 'GB', AUD: 'AU',
+  CAD: 'CA', CHF: 'CH', CNY: 'CN', INR: 'IN', SGD: 'SG',
+};
 
-// Initializing currency dropdowns and form events once the DOM is ready
+let ratesCache = {};
+try {
+  ratesCache = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+} catch {
+  ratesCache = {};
+}
+
+async function fetchRatesJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  const json = await res.json();
+  const rates = json.conversion_rates || json.rates;
+  if (!rates || json.result === 'error') {
+    throw new Error(json['error-type'] || 'Bad response');
+  }
+
+  let updated = json.time_last_update_utc || null;
+  if (!updated && json.timestamp != null) {
+    updated = new Date(Number(json.timestamp) * 1000).toUTCString();
+  }
+
+  return {
+    rates,
+    base: json.base_code || json.base || '',
+    updated,
+  };
+}
+
+/** Primary: hourly snapshot (browser-friendly CORS). Fallbacks: keyed v6, then open daily API. */
+async function ratesFromExchangerateFun(base) {
+  const url = `https://api.exchangerate.fun/latest?base=${encodeURIComponent(base)}`;
+  const data = await fetchRatesJson(url);
+  if (!data.base) data.base = base;
+  return data;
+}
+
+async function ratesFromKeyedV6(base) {
+  const key = typeof API_KEYS !== 'undefined' && API_KEYS.EXCHANGERATE_API_COM;
+  if (!key) throw new Error('No ExchangeRate-API key');
+  const url = `https://v6.exchangerate-api.com/v6/${encodeURIComponent(key)}/latest/${encodeURIComponent(base)}`;
+  const data = await fetchRatesJson(url);
+  if (!data.base) data.base = base;
+  return data;
+}
+
+async function ratesFromOpenEr(base) {
+  const url = `https://open.er-api.com/v6/latest/${encodeURIComponent(base)}`;
+  const data = await fetchRatesJson(url);
+  if (!data.base) data.base = base;
+  return data;
+}
+
+async function getRates(base, { force = false } = {}) {
+  const now = Date.now();
+  const hit = ratesCache[base];
+  if (!force && hit && now - hit.timestamp < CACHE_MS) return hit.data;
+
+  const sources = [ratesFromExchangerateFun, ratesFromKeyedV6, ratesFromOpenEr];
+  let lastErr;
+  for (const load of sources) {
+    try {
+      const data = await load(base);
+      ratesCache[base] = { timestamp: now, data };
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(ratesCache));
+      } catch {
+        /* storage full / private mode */
+      }
+      return data;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('All rate sources failed');
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function lsGet(key, fallback = null) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function currencyLabel(code) {
+  try {
+    const cc = FLAG_MAP[code] || code.slice(0, 2);
+    const flag = /^[A-Z]{2}$/.test(cc)
+      ? [...cc].map((c) => String.fromCodePoint(c.charCodeAt(0) + 127397)).join('')
+      : '🏳️';
+    const name = new Intl.DisplayNames([navigator.language], { type: 'currency' }).of(code);
+    return `${flag} ${code} - ${name}`;
+  } catch {
+    return code;
+  }
+}
+
+function fillSelect(select, codes, selected) {
+  const frag = document.createDocumentFragment();
+  codes.forEach((c) => frag.appendChild(new Option(currencyLabel(c), c)));
+  select.innerHTML = '';
+  select.appendChild(frag);
+  if (selected && codes.includes(selected)) select.value = selected;
+  syncCustomSelect(select);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-    const fromSelect = document.getElementById('from');
-    const toSelect = document.getElementById('to');
-    const form = document.getElementById('currency-conversion');
-    const resultElement = document.getElementById('result');
-    const status = document.getElementById('status');
-    const amountHint = document.getElementById('amount-hint');
-    const swapBtn = document.getElementById('swap');
-    const quickBtns = document.querySelectorAll('.quick-btn');
-    const copyBtn = document.getElementById('copy-btn');
-    const amountInput = document.getElementById('amount');
-    const themeToggle = document.getElementById('theme-toggle');
-    const iconSun = document.getElementById('icon-sun');
-    const iconMoon = document.getElementById('icon-moon');
+  const el = (id) => document.getElementById(id);
 
-    // Theme initialization
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        document.documentElement.setAttribute('data-theme', 'dark');
-        if (iconSun && iconMoon) {
-            iconSun.classList.remove('hidden');
-            iconMoon.classList.add('hidden');
-        }
+  const amountInput = el('amount');
+  const fromSelect = el('from');
+  const toSelect = el('to');
+  const form = el('currency-conversion');
+  const resultEl = el('result');
+  const inverseEl = el('inverse-rate');
+  const resultBox = el('result-container');
+  const statusEl = el('status');
+  const amountHint = el('amount-hint');
+  const swapBtn = el('swap');
+  const copyBtn = el('copy-btn');
+  const iconCopy = el('icon-copy');
+  const iconCheck = el('icon-check');
+  const toast = el('toast');
+  const themeToggle = el('theme-toggle');
+  const iconSun = el('icon-sun');
+  const iconMoon = el('icon-moon');
+  const tabConverter = el('tab-converter');
+  const tabLive = el('tab-live');
+  const converterSection = el('converter-section');
+  const liveSection = el('live-section');
+  const liveBase = el('live-base');
+  const liveSearch = el('live-search');
+  const liveUpdated = el('live-updated');
+  const liveStatus = el('live-status');
+  const rateLegend = el('rate-legend');
+  const liveBody = document.querySelector('#rates-table tbody');
+  const freshnessText = document.querySelector('.freshness-text');
+  const refreshLiveBtn = el('refresh-live');
+
+  let liveRates = null;
+  let livePrev = null;
+
+  function readPrevSnapshot(base) {
+    try {
+      const all = JSON.parse(localStorage.getItem(PREV_RATES_KEY) || '{}');
+      return all[base] || null;
+    } catch {
+      return null;
     }
+  }
 
-    if (themeToggle) {
-        themeToggle.addEventListener('click', () => {
-            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-            if (!isDark) document.documentElement.setAttribute('data-theme', 'dark');
-            else document.documentElement.removeAttribute('data-theme');
-            localStorage.setItem('theme', isDark ? 'light' : 'dark');
-            if (isDark) {
-                iconSun.classList.add('hidden');
-                iconMoon.classList.remove('hidden');
-            } else {
-                iconSun.classList.remove('hidden');
-                iconMoon.classList.add('hidden');
-            }
-        });
+  function writePrevSnapshot(base, rates) {
+    try {
+      const all = JSON.parse(localStorage.getItem(PREV_RATES_KEY) || '{}');
+      all[base] = JSON.parse(JSON.stringify(rates));
+      localStorage.setItem(PREV_RATES_KEY, JSON.stringify(all));
+    } catch {
+      /* ignore */
     }
+  }
 
-    // Tabs & live elements
-    const tabConverter = document.getElementById('tab-converter');
-    const tabLive = document.getElementById('tab-live');
-    const converterSection = document.getElementById('converter-section');
-    const liveSection = document.getElementById('live-section');
-    const liveBase = document.getElementById('live-base');
-    const liveTableBody = document.querySelector('#rates-table tbody');
-    const liveStatus = document.getElementById('live-status');
-    const liveUpdated = document.getElementById('live-updated');
-    const liveSearch = document.getElementById('live-search');
-    let liveIntervalId = null;
-    let lastRates = null; // remember last fetched rates to detect changes
-    const CHANGE_EPSILON = 0.00001; // higher sensitivity for tiny moves
-    const FETCH_INTERVAL_MS = 10000; // Speed increased to 10s to avoid rate limiting
+  function setTheme(dark) {
+    if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    iconSun.classList.toggle('hidden', !dark);
+    iconMoon.classList.toggle('hidden', dark);
+    lsSet('theme', dark ? 'dark' : 'light');
+  }
 
-    // Fetch available currencies and populate dropdowns (defaults from USD)
-    status.textContent = 'Loading currencies…';
-    async function loadCurrencies() {
-        try {
-            const resp = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
-            if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
-            const data = await resp.json();
-            const currencies = Object.keys(data.rates);
-            
-            // Cache the initial USD fetch for instant first conversions
-            ratesCache['USD'] = { timestamp: Date.now(), data: data };
-            localStorage.setItem('ratesCache', JSON.stringify(ratesCache));
-            
-            // Helper to get beautiful currency labels (e.g. "🇺🇸 USD - US Dollar")
-            function getCurrencyLabel(code) {
-                try {
-                    let countryCode = code.slice(0, 2);
-                    if (code === 'EUR') countryCode = 'EU'; // Euro special case
-                    
-                    const flag = countryCode.toUpperCase().replace(/./g, char => 
-                        String.fromCodePoint(char.charCodeAt(0) + 127397)
-                    );
-                    
-                    const nameFormatter = new Intl.DisplayNames([navigator.language], { type: 'currency' });
-                    const fullName = nameFormatter.of(code);
-                    
-                    return `${flag} ${code} - ${fullName}`;
-                } catch (e) {
-                    return code; // Fallback
-                }
-            }
+  const savedTheme = lsGet('theme');
+  setTheme(
+    savedTheme === 'dark' ||
+      (!savedTheme && matchMedia('(prefers-color-scheme: dark)').matches)
+  );
+  themeToggle.addEventListener('click', () => {
+    setTheme(document.documentElement.getAttribute('data-theme') !== 'dark');
+  });
 
-            const fromFragment = document.createDocumentFragment();
-            const toFragment = document.createDocumentFragment();
-            const baseFragment = document.createDocumentFragment();
+  let toastTimer;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.remove('hidden');
+    requestAnimationFrame(() => toast.classList.add('show'));
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.classList.add('hidden'), 300);
+    }, 2000);
+  }
 
-            currencies.forEach(curr => {
-                const label = getCurrencyLabel(curr);
-                fromFragment.appendChild(new Option(label, curr));
-                toFragment.appendChild(new Option(label, curr));
-                if (liveBase) baseFragment.appendChild(new Option(label, curr));
-            });
+  let liveTabTimer = null;
+  let lastLiveAutoFetch = 0;
+  let liveFetchInFlight = false;
 
-            fromSelect.innerHTML = '';
-            toSelect.innerHTML = '';
-            fromSelect.appendChild(fromFragment);
-            toSelect.appendChild(toFragment);
-
-            if (liveBase) {
-                liveBase.innerHTML = '';
-                liveBase.appendChild(baseFragment);
-            }
-
-            fromSelect.value = localStorage.getItem('fromCurrency') || 'USD';
-            toSelect.value = localStorage.getItem('toCurrency') || 'INR';
-            if (liveBase) liveBase.value = localStorage.getItem('liveBase') || 'USD';
-            status.textContent = '';
-        } catch (err) {
-            fromSelect.innerHTML = '<option value="USD">USD</option><option value="INR">INR</option>';
-            toSelect.innerHTML = '<option value="USD">USD</option><option value="INR">INR</option>';
-            if (liveBase) liveBase.innerHTML = '<option value="USD">USD</option>';
-            status.textContent = 'Could not load currencies – defaults shown';
-            console.error('Failed to load', err);
-        }
+  function stopLiveTabWatch() {
+    if (liveTabTimer) {
+      clearInterval(liveTabTimer);
+      liveTabTimer = null;
     }
-    loadCurrencies();
+  }
 
-    // Debounce function to prevent API spam while typing
-    function debounce(func, delay) {
-        let timeoutId;
-        return function(...args) {
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => func.apply(this, args), delay);
-        };
+  function pulseLiveUpdated() {
+    liveUpdated.classList.remove('is-pulse');
+    void liveUpdated.offsetWidth;
+    liveUpdated.classList.add('is-pulse');
+  }
+
+  function startLiveTabWatch() {
+    stopLiveTabWatch();
+    lastLiveAutoFetch = Date.now();
+    liveTabTimer = setInterval(() => {
+      if (liveSection.hidden) return;
+      pulseLiveUpdated();
+      if (liveFetchInFlight) return;
+      if (Date.now() - lastLiveAutoFetch < LIVE_AUTO_FETCH_MS) return;
+      lastLiveAutoFetch = Date.now();
+      fetchLive({ force: true, auto: true });
+    }, LIVE_TAB_TICK_MS);
+  }
+
+  function showTab(name) {
+    const live = name === 'live';
+
+    tabConverter.classList.toggle('active', !live);
+    tabLive.classList.toggle('active', live);
+    tabConverter.setAttribute('aria-selected', String(!live));
+    tabLive.setAttribute('aria-selected', String(live));
+
+    converterSection.classList.toggle('hidden', live);
+    liveSection.classList.toggle('hidden', !live);
+    converterSection.toggleAttribute('hidden', live);
+    liveSection.toggleAttribute('hidden', !live);
+
+    if (live) {
+      fetchLive(false);
+      startLiveTabWatch();
+    } else {
+      stopLiveTabWatch();
     }
-    const debouncedConvert = debounce(convert, 500);
+  }
 
-    // Auto-convert on input
-    amountInput.addEventListener('input', debouncedConvert);
+  tabConverter.addEventListener('click', () => showTab('converter'));
+  tabLive.addEventListener('click', () => showTab('live'));
 
-    // Save preferences and auto-convert on select change
-    fromSelect.addEventListener('change', () => {
-        localStorage.setItem('fromCurrency', fromSelect.value);
-        convert();
-    });
-    toSelect.addEventListener('change', () => {
-        localStorage.setItem('toCurrency', toSelect.value);
-        convert();
-    });
+  statusEl.textContent = 'Loading currencies…';
 
-    form.addEventListener('submit', function(e) {
-        e.preventDefault();
-        convert();
-    });
-
-    // Swap the selected currencies and save preference
-    if (swapBtn) {
-        swapBtn.addEventListener('click', () => {
-            swapBtn.classList.toggle('swapped'); // Trigger rotation animation
-            [fromSelect.value, toSelect.value] = [toSelect.value, fromSelect.value];
-            localStorage.setItem('fromCurrency', fromSelect.value);
-            localStorage.setItem('toCurrency', toSelect.value);
-            convert();
-        });
+  async function loadCurrencies() {
+    try {
+      const { rates } = await getRates('USD');
+      const codes = Object.keys(rates).sort();
+      fillSelect(fromSelect, codes, lsGet('fromCurrency', 'USD'));
+      fillSelect(toSelect, codes, lsGet('toCurrency', 'INR'));
+      fillSelect(liveBase, codes, lsGet('liveBase', 'USD'));
+      statusEl.textContent = '';
+      if (amountInput.value) convert();
+    } catch (err) {
+      console.error(err);
+      const fallback = ['USD', 'EUR', 'GBP', 'INR', 'JPY'];
+      fillSelect(fromSelect, fallback, 'USD');
+      fillSelect(toSelect, fallback, 'INR');
+      fillSelect(liveBase, fallback, 'USD');
+      statusEl.textContent = 'Could not load currencies — using defaults';
     }
+  }
 
-    // Quick amount buttons logic
-    quickBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const currentVal = parseFloat(amountInput.value) || 0;
-            const addVal = parseFloat(btn.getAttribute('data-val'));
-            amountInput.value = currentVal + addVal;
-            // Auto-trigger conversion
-            if (fromSelect.value && toSelect.value) convert();
-        });
-    });
+  async function convert() {
+    const amount = parseFloat(amountInput.value);
+    const from = fromSelect.value;
+    const to = toSelect.value;
 
-    // Power-user Keyboard Shortcuts
-    document.addEventListener('keydown', (e) => {
-        // Ignore shortcuts if the user is typing in an input field
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-        
-        const key = e.key.toLowerCase();
-        if (key === 'a') {
-            e.preventDefault();
-            if (amountInput) amountInput.focus();
-        } else if (key === 's') {
-            e.preventDefault();
-            if (swapBtn) swapBtn.click();
-        } else if (key === '/') {
-            e.preventDefault();
-            showLive();
-            if (liveSearch) setTimeout(() => liveSearch.focus(), 50);
-        }
-    });
-
-    // Copy to clipboard logic
-    const iconCopy = document.getElementById('icon-copy');
-    const iconCheck = document.getElementById('icon-check');
-    const toast = document.getElementById('toast');
-    
-    function showToast(message) {
-        if (!toast) return;
-        toast.textContent = message;
-        toast.classList.remove('hidden');
-        // Small delay to allow display:block to apply before animating opacity
-        requestAnimationFrame(() => {
-            toast.classList.add('show');
-        });
-        setTimeout(() => {
-            toast.classList.remove('show');
-            setTimeout(() => toast.classList.add('hidden'), 400); // Wait for transition
-        }, 2000);
-    }
-
-    if (copyBtn) {
-        copyBtn.addEventListener('click', () => {
-            const text = resultElement.textContent;
-            if (text && text !== '—' && text !== 'Currency not supported' && text !== 'Conversion failed') {
-                navigator.clipboard.writeText(text).then(() => {
-                    iconCopy.classList.add('hidden');
-                    iconCheck.classList.remove('hidden');
-                    showToast('Copied to clipboard');
-                    setTimeout(() => {
-                        iconCopy.classList.remove('hidden');
-                        iconCheck.classList.add('hidden');
-                    }, 2000);
-                });
-            }
-        });
-    }
-
-    // Tabs wiring
-    function showConverter() {
-        tabConverter.classList.add('active');
-        tabLive.classList.remove('active');
-        tabConverter.setAttribute('aria-selected', 'true');
-        tabLive.setAttribute('aria-selected', 'false');
-        converterSection.classList.remove('hidden');
-        liveSection.classList.add('hidden');
-        // Keep live updates running in the background
-    }
-
-    function showLive() {
-        tabLive.classList.add('active');
-        tabConverter.classList.remove('active');
-        tabLive.setAttribute('aria-selected', 'true');
-        tabConverter.setAttribute('aria-selected', 'false');
-        liveSection.classList.remove('hidden');
-        converterSection.classList.add('hidden');
-        startLive();
-    }
-
-    if (tabConverter && tabLive) {
-        tabConverter.addEventListener('click', showConverter);
-        tabLive.addEventListener('click', showLive);
-    }
-
-    // Live rates logic
-    function renderRatesTable(rates) {
-        if (!liveTableBody) return;
-        
-        const fragment = document.createDocumentFragment();
-        const query = liveSearch ? liveSearch.value.toUpperCase() : '';
-        let hasVisibleRows = false;
-        
-        // Show a subset of popular currencies at the top
-        const popular = ['USD','EUR','GBP','INR','JPY','AUD','CAD','CHF','CNY','SGD'];
-        const ordered = [...new Set([...popular, ...Object.keys(rates)])];
-        ordered.forEach(code => {
-            if (!rates[code]) return;
-            
-            // Filter out non-matching rows if a search query exists
-            if (query && !code.includes(query)) return;
-            
-            hasVisibleRows = true;
-            const tr = document.createElement('tr');
-            const tdCode = document.createElement('td');
-            const tdRate = document.createElement('td');
-            tdCode.textContent = code;
-            const value = rates[code];
-            tdRate.textContent = value.toFixed(5);
-            if (lastRates && lastRates[code] !== undefined) {
-                const prev = lastRates[code];
-                const diff = value - prev;
-                if (Math.abs(diff) >= CHANGE_EPSILON) {
-                    let indicator = null;
-                    // Clear previous persistent state before applying new
-                    tdRate.classList.remove('rate-up-persist','rate-down-persist','flash-up','flash-down');
-                    if (diff > 0) {
-                        tdRate.classList.add('rate-up-persist','flash-up');
-                        indicator = document.createElement('span');
-                        indicator.className = 'change-indicator';
-                        indicator.textContent = '▲';
-                    } else if (diff < 0) {
-                        tdRate.classList.add('rate-down-persist','flash-down');
-                        indicator = document.createElement('span');
-                        indicator.className = 'change-indicator';
-                        indicator.textContent = '▼';
-                    }
-                    if (indicator) {
-                        tdRate.appendChild(indicator);
-                        // keep arrow and persistent color; only clear flash background after a moment
-                        setTimeout(() => {
-                            tdRate.classList.remove('flash-up', 'flash-down');
-                        }, 900);
-                    }
-                }
-            }
-            tr.appendChild(tdCode);
-            tr.appendChild(tdRate);
-            fragment.appendChild(tr);
-        });
-
-        // Show an empty state if nothing matches the search
-        if (!hasVisibleRows && query) {
-            const tr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.colSpan = 2;
-            td.textContent = `No currencies found matching "${query}"`;
-            td.style.textAlign = 'center';
-            td.style.color = 'var(--text-secondary)';
-            tr.appendChild(td);
-            fragment.appendChild(tr);
-        }
-        
-        liveTableBody.innerHTML = '';
-        liveTableBody.appendChild(fragment);
-        // snapshot for next comparison
-        lastRates = { ...rates };
-    }
-
-    // Instantly filter the table as the user types
-    if (liveSearch) {
-        liveSearch.addEventListener('input', () => {
-            if (lastRates) renderRatesTable(lastRates);
-        });
-    }
-
-    async function fetchLive() {
-        if (!liveBase) return;
-        const base = liveBase.value || 'USD';
-        liveStatus.textContent = 'Refreshing…';
-        try {
-            const resp = await fetch(`https://api.exchangerate-api.com/v4/latest/${base}`);
-            if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
-            const data = await resp.json();
-            ratesCache[base] = { timestamp: Date.now(), data: data };
-            localStorage.setItem('ratesCache', JSON.stringify(ratesCache));
-            renderRatesTable(data.rates || {});
-            const dt = new Date();
-            liveUpdated.textContent = `Updated ${dt.toLocaleTimeString()}`;
-            liveStatus.textContent = '';
-        } catch (err) {
-            liveStatus.textContent = 'Failed to load live rates';
-            console.error(err);
-        }
-    }
-
-    function startLive() {
-        if (liveIntervalId) return;
-        fetchLive();
-        // Adjusted cadence to prevent rate limiting, while keeping a "live" feel
-        liveIntervalId = setInterval(fetchLive, FETCH_INTERVAL_MS);
-        if (liveBase) liveBase.addEventListener('change', () => {
-            localStorage.setItem('liveBase', liveBase.value);
-            fetchLive();
-        });
-    }
-
-    function stopLive() {
-        if (liveIntervalId) {
-            clearInterval(liveIntervalId);
-            liveIntervalId = null;
-        }
-        if (liveBase) liveBase.removeEventListener('change', fetchLive);
-    }
-
-    // Default to Converter tab visible, but keep live running continuously
-    showConverter();
-    startLive();
-
-    // Network Status & Offline Support
-    function updateNetworkStatus() {
-        const isOnline = navigator.onLine;
-        const convertBtn = document.getElementById('convert-btn');
-        
-        if (isOnline) {
-            showToast('Back online! Live rates restored.');
-            if (convertBtn) convertBtn.disabled = false;
-            startLive();
-        } else {
-            showToast('Offline Mode. Using cached rates.');
-            if (convertBtn) convertBtn.disabled = false; // Works offline thanks to SW!
-            stopLive();
-        }
-    }
-    window.addEventListener('online', updateNetworkStatus);
-    window.addEventListener('offline', updateNetworkStatus);
-
-    // PWA Service Worker Registration
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-            navigator.serviceWorker.register('sw.js')
-                .catch(err => console.error('Service Worker registration failed:', err));
-        });
-    }
-});
-
-// Convert the entered amount using the selected currency pair
-async function convert() {
-    const amount = parseFloat(document.getElementById('amount').value);
-    const from = document.getElementById('from').value;
-    const to = document.getElementById('to').value;
-    const resultElement = document.getElementById('result');
-    const status = document.getElementById('status');
-    const amountHint = document.getElementById('amount-hint');
-    const inverseRateElement = document.getElementById('inverse-rate');
-    const resultContainer = document.getElementById('result-container');
+    if (!from || !to) return;
 
     if (isNaN(amount) || amount <= 0) {
-        amountHint.textContent = 'Enter a positive number';
-        resultElement.textContent = '';
-        if (inverseRateElement) inverseRateElement.textContent = '';
-        return;
+      amountHint.textContent = amountInput.value ? 'Enter a positive number' : '';
+      resultEl.textContent = '—';
+      inverseEl.textContent = '';
+      return;
     }
+
     amountHint.textContent = '';
-    status.textContent = 'Converting…';
+    statusEl.textContent = 'Converting…';
 
     try {
-        let data;
-        const now = Date.now();
-        
-        if (ratesCache[from] && (now - ratesCache[from].timestamp < CACHE_DURATION_MS)) {
-            data = ratesCache[from].data;
-        } else {
-            const resp = await fetch(`https://api.exchangerate-api.com/v4/latest/${from}`);
-            if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
-            data = await resp.json();
-            ratesCache[from] = { timestamp: now, data };
-            localStorage.setItem('ratesCache', JSON.stringify(ratesCache));
-        }
-        
-        const conversionRate = data.rates[to];
-        if (!conversionRate) {
-            resultElement.textContent = 'Currency not supported';
-            return;
-        }
-        
-        // Use browser's Intl API for correct global currency formatting (e.g. €100.00 vs $100.00)
-        const convertedAmount = amount * conversionRate;
-        const formatter = new Intl.NumberFormat(navigator.language, {
-            style: 'currency',
-            currency: to
-        });
-        resultElement.textContent = formatter.format(convertedAmount);
-        
-        // Calculate and display inverse rate
-        if (inverseRateElement) {
-            const inverse = 1 / conversionRate;
-            const inverseFormatter = new Intl.NumberFormat(navigator.language, {
-                style: 'currency',
-                currency: from,
-                maximumFractionDigits: 4
-            });
-            inverseRateElement.textContent = `1 ${to} = ${inverseFormatter.format(inverse)}`;
-        }
-        
-        // Trigger pulse animation for visual feedback
-        resultContainer.classList.remove('pulse-anim');
-        void resultContainer.offsetWidth; // Trigger reflow to restart animation
-        resultContainer.classList.add('pulse-anim');
-        
-        status.textContent = '';
+      const { rates, updated } = await getRates(from);
+      const rate = rates[to];
+      if (!rate) {
+        resultEl.textContent = 'Currency not supported';
+        inverseEl.textContent = '';
+        statusEl.textContent = '';
+        return;
+      }
+
+      resultEl.textContent = new Intl.NumberFormat(navigator.language, {
+        style: 'currency',
+        currency: to,
+      }).format(amount * rate);
+
+      inverseEl.textContent = `1 ${to} = ${new Intl.NumberFormat(navigator.language, {
+        style: 'currency',
+        currency: from,
+        maximumFractionDigits: 4,
+      }).format(1 / rate)}`;
+
+      resultBox.classList.remove('pulse-anim');
+      void resultBox.offsetWidth; // re-trigger CSS animation
+      resultBox.classList.add('pulse-anim');
+
+      if (freshnessText && updated) {
+        const d = new Date(updated);
+        freshnessText.textContent = `Rates as of ${d.toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`;
+      }
+
+      statusEl.textContent = '';
     } catch (err) {
-        resultElement.textContent = 'Conversion failed';
-        if (inverseRateElement) inverseRateElement.textContent = '';
-        status.textContent = '';
-        console.error(err);
+      console.error(err);
+      resultEl.textContent = 'Conversion failed';
+      inverseEl.textContent = '';
+      statusEl.textContent = navigator.onLine ? 'API unavailable' : 'Offline — no cached rates';
     }
-}
+  }
+
+  const debouncedConvert = debounce(convert, 400);
+  amountInput.addEventListener('input', debouncedConvert);
+  fromSelect.addEventListener('change', () => {
+    lsSet('fromCurrency', fromSelect.value);
+    convert();
+  });
+  toSelect.addEventListener('change', () => {
+    lsSet('toCurrency', toSelect.value);
+    convert();
+  });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    convert();
+  });
+
+  swapBtn.addEventListener('click', () => {
+    swapBtn.classList.toggle('swapped');
+    [fromSelect.value, toSelect.value] = [toSelect.value, fromSelect.value];
+    lsSet('fromCurrency', fromSelect.value);
+    lsSet('toCurrency', toSelect.value);
+    updateCustomSelectTrigger(fromSelect);
+    updateCustomSelectTrigger(toSelect);
+    convert();
+  });
+
+  document.querySelectorAll('.quick-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const cur = parseFloat(amountInput.value) || 0;
+      amountInput.value = cur + parseFloat(btn.dataset.val);
+      convert();
+    });
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    const text = resultEl.textContent;
+    if (!text || text === '—' || text.includes('failed') || text.includes('supported')) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      iconCopy.classList.add('hidden');
+      iconCheck.classList.remove('hidden');
+      showToast('Copied to clipboard');
+      setTimeout(() => {
+        iconCopy.classList.remove('hidden');
+        iconCheck.classList.add('hidden');
+      }, 1800);
+    } catch {
+      showToast('Copy failed');
+    }
+  });
+
+  const svgNs = 'http://www.w3.org/2000/svg';
+
+  function rateTriangle(up) {
+    const svg = document.createElementNS(svgNs, 'svg');
+    svg.setAttribute('viewBox', '0 0 12 12');
+    svg.setAttribute('width', '11');
+    svg.setAttribute('height', '11');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(svgNs, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute(
+      'd',
+      up ? 'M6 1.5 10.25 9.25H1.75Z' : 'M6 10.5 1.75 2.75h8.5Z'
+    );
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function moved(code, value) {
+    if (!livePrev || livePrev[code] == null) return null;
+    const prev = Number(livePrev[code]);
+    const curr = Number(value);
+    if (!Number.isFinite(prev) || !Number.isFinite(curr)) return null;
+    const diff = curr - prev;
+    if (Math.abs(diff) < RATE_EPS) return null;
+    return diff > 0 ? 'up' : 'down';
+  }
+
+  function addArrow(td, up, prevVal) {
+    const prev = Number(prevVal);
+    const wrap = document.createElement('span');
+    wrap.className = `change-arrow ${up ? 'arrow-up' : 'arrow-down'}`;
+    wrap.setAttribute('aria-label', up ? `Rate up from ${prev.toFixed(5)}` : `Rate down from ${prev.toFixed(5)}`);
+    wrap.title = up ? `Up from ${prev.toFixed(5)}` : `Down from ${prev.toFixed(5)}`;
+    wrap.appendChild(rateTriangle(up));
+    td.appendChild(wrap);
+  }
+
+  function renderRatesTable() {
+    if (!liveBody || !liveRates) return { changed: 0 };
+    const q = (liveSearch.value || '').toUpperCase().trim();
+    const base = liveBase.value || 'USD';
+    const ordered = [...new Set([...POPULAR, ...Object.keys(liveRates)])];
+    const frag = document.createDocumentFragment();
+    let visible = 0;
+    let changed = 0;
+
+    for (const code of ordered) {
+      if (code === base || liveRates[code] == null) continue;
+      if (q && !code.includes(q)) continue;
+
+      visible++;
+      const value = liveRates[code];
+      const tr = document.createElement('tr');
+
+      const tdCode = document.createElement('td');
+      tdCode.textContent = code;
+
+      const tdRate = document.createElement('td');
+      tdRate.className = 'align-end rate-value';
+      const num = document.createElement('span');
+      num.className = 'rate-num';
+      num.textContent = Number(value).toFixed(5);
+      tdRate.appendChild(num);
+
+      const dir = moved(code, value);
+      if (dir) {
+        changed++;
+        const up = dir === 'up';
+        tdRate.classList.add(up ? 'rate-up' : 'rate-down', up ? 'flash-up' : 'flash-down');
+        addArrow(tdRate, up, livePrev[code]);
+        setTimeout(() => tdRate.classList.remove('flash-up', 'flash-down'), 900);
+      }
+
+      const tdUse = document.createElement('td');
+      tdUse.className = 'align-end';
+      const useBtn = document.createElement('button');
+      useBtn.type = 'button';
+      useBtn.className = 'use-btn';
+      useBtn.textContent = 'Use';
+      useBtn.title = `Convert ${base} → ${code}`;
+      useBtn.addEventListener('click', () => {
+        fromSelect.value = base;
+        toSelect.value = code;
+        lsSet('fromCurrency', base);
+        lsSet('toCurrency', code);
+        updateCustomSelectTrigger(fromSelect);
+        updateCustomSelectTrigger(toSelect);
+        showTab('converter');
+        convert();
+      });
+      tdUse.appendChild(useBtn);
+
+      tr.append(tdCode, tdRate, tdUse);
+      frag.appendChild(tr);
+    }
+
+    if (!visible && q) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.className = 'empty-row';
+      td.textContent = `No match for "${q}"`;
+      tr.appendChild(td);
+      frag.appendChild(tr);
+    }
+
+    liveBody.replaceChildren(frag);
+    return { changed };
+  }
+
+  async function fetchLive(options = {}) {
+    const force = options === true || options.force;
+    const auto = Boolean(options.auto);
+    const base = liveBase.value || 'USD';
+
+    if (liveFetchInFlight) return;
+    liveFetchInFlight = true;
+
+    if (!auto) {
+      liveStatus.textContent = force ? 'Refreshing…' : 'Loading…';
+    } else if (force) {
+      liveStatus.textContent = 'Checking for updates…';
+    }
+
+    try {
+      const { rates, updated } = await getRates(base, { force });
+
+      livePrev = readPrevSnapshot(base);
+      const hadPrev = !!livePrev;
+      liveRates = rates;
+      const { changed } = renderRatesTable();
+
+      writePrevSnapshot(base, rates);
+
+      const when = updated ? new Date(updated) : new Date();
+      const stamp = when.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      liveUpdated.textContent = auto
+        ? `Live · provider ${stamp} · checked just now`
+        : `As of ${stamp}`;
+
+      rateLegend.classList.toggle('hidden', !hadPrev);
+      if (!hadPrev) {
+        liveStatus.textContent =
+          'Saved a snapshot for this base. Come back later or use Fetch latest to compare against it.';
+      } else if (changed > 0) {
+        liveStatus.textContent = `${changed} ${changed === 1 ? 'rate' : 'rates'} moved since your last visit.`;
+      } else if (auto) {
+        liveStatus.textContent = 'Watching live — no rate changes since your last snapshot.';
+      } else {
+        liveStatus.textContent =
+          'No change since your last visit (numbers match the saved snapshot). Fetch latest after the API updates.';
+      }
+    } catch (err) {
+      console.error(err);
+      liveStatus.textContent = 'Live rates unavailable';
+      rateLegend.classList.add('hidden');
+    } finally {
+      liveFetchInFlight = false;
+    }
+  }
+
+  liveBase.addEventListener('change', () => {
+    lsSet('liveBase', liveBase.value);
+    liveRates = null;
+    lastLiveAutoFetch = Date.now();
+    fetchLive(false);
+  });
+  liveSearch.addEventListener('input', () => renderRatesTable());
+  refreshLiveBtn.addEventListener('click', () => {
+    lastLiveAutoFetch = Date.now();
+    fetchLive({ force: true });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopLiveTabWatch();
+    else if (!liveSection.hidden) startLiveTabWatch();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'a') {
+      e.preventDefault();
+      amountInput.focus();
+    } else if (k === 's') {
+      e.preventDefault();
+      swapBtn.click();
+    } else if (k === '/') {
+      e.preventDefault();
+      showTab('live');
+      setTimeout(() => liveSearch.focus(), 40);
+    }
+  });
+
+  window.addEventListener('online', () => showToast('Back online'));
+  window.addEventListener('offline', () => showToast('Offline — using cached rates'));
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('SW:', err));
+    });
+  }
+
+  attachCustomSelect(fromSelect);
+  attachCustomSelect(toSelect);
+  attachCustomSelect(liveBase);
+
+  showTab('converter');
+  loadCurrencies();
+});
